@@ -61,7 +61,7 @@ isAdmin = async (req, res, next) => {
 };
 
 /**
- * Middleware function to check if the user is a VRSW.
+ * Middleware function to check if the user is a VRSW or Admin.
  * @param {object} req - The request object.
  * @param {object} res - The response object.
  * @param {function} next - The next middleware function.
@@ -80,12 +80,12 @@ isVRSW = async (req, res, next) => {
       return res.status(404).send({ message: "User not found!" });
     }
 
-    const hasVRSWRole = user.roles.some(role => role.name === "vrsw");
+    const hasVRSWRole = user.roles.some(role => role.name === "vrsw" || role.name === "admin");
     
     if (hasVRSWRole) {
       next();
     } else {
-      res.status(403).send({ message: "Require VRSW Role!" });
+      res.status(403).send({ message: "Require VRSW or Admin Role!" });
     }
   } catch (err) {
     res.status(500).send({ message: err.message });
