@@ -10,12 +10,37 @@ class ClubService {
     }
 
     /**
-     * Lädt das SDK dynamisch
+     * Lädt das SDK dynamisch mit Fehlerbehandlung
      */
     async loadSDK() {
         if (!this.sdk) {
-            const { BasketballBundSDK } = await import('basketball-bund-sdk');
-            this.sdk = new BasketballBundSDK();
+            try {
+                // Versuche verschiedene Import-Methoden
+                let BasketballBundSDK;
+                try {
+                    const module = await import('basketball-bund-sdk');
+                    BasketballBundSDK = module.BasketballBundSDK || module.default;
+                } catch (importError) {
+                    console.error('Fehler beim Import des SDK:', importError.message);
+                    // Fallback: Versuche require (falls verfügbar)
+                    try {
+                        const module = require('basketball-bund-sdk');
+                        BasketballBundSDK = module.BasketballBundSDK || module.default;
+                    } catch (requireError) {
+                        throw new Error(`SDK konnte nicht geladen werden: ${importError.message}`);
+                    }
+                }
+                
+                if (!BasketballBundSDK) {
+                    throw new Error('BasketballBundSDK Klasse nicht gefunden');
+                }
+                
+                this.sdk = new BasketballBundSDK();
+                console.log('Basketball-Bund SDK erfolgreich geladen');
+            } catch (error) {
+                console.error('Kritischer Fehler beim Laden des SDK:', error.message);
+                throw error;
+            }
         }
         return this.sdk;
     }
@@ -48,7 +73,13 @@ class ClubService {
                     });
                     console.log(`Club ${clubId} (${clubData.vereinsname}) in DB gespeichert`);
                 } else {
-                    throw new Error(`Club mit ID ${clubId} konnte nicht von der API abgerufen werden`);
+                    // Fallback: Erstelle Club mit unbekanntem Namen
+                    console.warn(`Club ${clubId} konnte nicht von API abgerufen werden, erstelle Fallback-Eintrag`);
+                    club = await Club.create({
+                        clubId: clubId,
+                        vereinsname: `Unbekannter Verein (${clubId})`,
+                        lastUpdated: new Date()
+                    });
                 }
             } else {
                 // Club in DB gefunden, prüfen ob Update nötig ist
@@ -85,58 +116,118 @@ class ClubService {
                 return fallbackClub;
             }
             
-            throw error;
+            // Wenn kein Club in DB gefunden und API fehlgeschlagen, Club-ID als Name verwenden
+            console.log(`Club ${clubId} nicht verfügbar, verwende Club-ID als Name`);
+            return {
+                clubId: clubId,
+                vereinsname: clubId.toString(),
+                lastUpdated: new Date()
+            };
         }
     }
 
     /**
-     * Holt Club-Daten von der Basketball-Bund API
+     * Holt Club-Daten von der Basketball-Bund API mit Retry-Logik
      * @param {number} clubId - Die ID des Vereins
+     * @param {number} retries - Anzahl der Wiederholungsversuche
      * @returns {Promise<Object|null>} Club-Daten oder null
      */
-    async fetchClubFromAPI(clubId) {
-        try {
-            const sdk = await this.loadSDK();
-            const response = await sdk.club.getActualMatches({ clubId: clubId });
-            
-            if (response && response.data && response.data.club && response.data.club.vereinsname) {
-                return {
-                    clubId: clubId,
-                    vereinsname: response.data.club.vereinsname
-                };
+    async fetchClubFromAPI(clubId, retries = 3) {
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+                const sdk = await this.loadSDK();
+                
+                // Timeout für API-Aufruf setzen
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Request timeout')), 15000); // 15 Sekunden Timeout
+                });
+                
+                const apiPromise = sdk.club.getActualMatches({ clubId: clubId });
+                const response = await Promise.race([apiPromise, timeoutPromise]);
+                console.log(response);
+                if (response && response.club && response.club.vereinsname) {
+                    return {
+                        clubId: clubId,
+                        vereinsname: response.club.vereinsname
+                    };
+                }
+                
+                return null;
+            } catch (error) {
+                console.error(`API-Fehler für Club ${clubId} (Versuch ${attempt}/${retries}):`, error.message);
+                
+                if (attempt === retries) {
+                    // Letzter Versuch fehlgeschlagen, null zurückgeben
+                    console.error(`Club ${clubId} konnte nach ${retries} Versuchen nicht abgerufen werden`);
+                    return null;
+                }
+                
+                // Warten vor dem nächsten Versuch (exponential backoff)
+                const delay = Math.min(5000 * Math.pow(2, attempt - 1), 30000); // Noch längere Verzögerungen
+                console.log(`Warte ${delay}ms vor nächstem Versuch...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
-            
-            return null;
-        } catch (error) {
-            console.error(`API-Fehler für Club ${clubId}:`, error.message);
-            return null;
         }
+        
+        return null;
     }
 
     /**
-     * Holt mehrere Clubs gleichzeitig
+     * Holt mehrere Clubs in kleinen Batches mit langen Pausen
      * @param {number[]} clubIds - Array von Club-IDs
      * @returns {Promise<Object[]>} Array von Club-Objekten
      */
     async getMultipleClubs(clubIds) {
-        const clubs = [];
         const uniqueClubIds = [...new Set(clubIds)]; // Duplikate entfernen
-
-        for (const clubId of uniqueClubIds) {
-            try {
-                const club = await this.getOrCreateClub(clubId);
-                clubs.push(club);
-            } catch (error) {
-                console.error(`Fehler beim Abrufen von Club ${clubId}:`, error.message);
-                // Füge einen Fallback-Club hinzu
-                clubs.push({
-                    clubId: clubId,
-                    vereinsname: `Unbekannter Verein (${clubId})`,
-                    lastUpdated: new Date()
-                });
+        const clubs = [];
+        
+        // Kleine Batches mit langen Pausen zwischen den Batches
+        const batchSize = 2; // Nur 2 Clubs pro Batch
+        const batchDelay = 10000; // 10 Sekunden Pause zwischen Batches
+        
+        for (let i = 0; i < uniqueClubIds.length; i += batchSize) {
+            const batch = uniqueClubIds.slice(i, i + batchSize);
+            console.log(`\n=== Batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(uniqueClubIds.length/batchSize)} ===`);
+            console.log(`Verarbeite Clubs: ${batch.join(', ')}`);
+            
+            // Verarbeite Batch seriell
+            for (let j = 0; j < batch.length; j++) {
+                const clubId = batch[j];
+                
+                try {
+                    console.log(`Lade Club ${clubId} (${i + j + 1}/${uniqueClubIds.length})...`);
+                    const club = await this.getOrCreateClub(clubId);
+                    clubs.push(club);
+                    
+                    // Kurze Pause zwischen Clubs im gleichen Batch
+                    if (j < batch.length - 1) {
+                        console.log(`Warte 3 Sekunden...`);
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
+                } catch (error) {
+                    console.error(`Fehler beim Abrufen von Club ${clubId}:`, error.message);
+                    // Füge Club-ID als Name hinzu
+                    clubs.push({
+                        clubId: clubId,
+                        vereinsname: clubId.toString(),
+                        lastUpdated: new Date()
+                    });
+                    
+                    // Auch bei Fehlern eine kurze Pause
+                    if (j < batch.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
+            }
+            
+            // Lange Pause zwischen Batches
+            if (i + batchSize < uniqueClubIds.length) {
+                console.log(`\n⏳ Warte ${batchDelay/1000} Sekunden vor nächstem Batch...`);
+                await new Promise(resolve => setTimeout(resolve, batchDelay));
             }
         }
-
+        
+        console.log(`\n✅ Alle ${uniqueClubIds.length} Clubs verarbeitet`);
         return clubs;
     }
 

@@ -1,7 +1,8 @@
 const axios = require("axios"); // Importing axios for making HTTP requests
 const { mail, getEmailText } = require("../_mailer/mailer"); // Importing mail and getEmailText from mailer
-const { Liga, Match, User } = require("../_models"); // Importing Liga, Match, User models
+const { Liga, Match, User, Club } = require("../_models"); // Importing Liga, Match, User, Club models
 const clubService = require('../_services/clubService'); // Importing club service
+const { Op } = require('sequelize'); // Importing Sequelize operators
 
 // Dynamischer Import für ES6-Modul
 let BasketballBundSDK;
@@ -41,20 +42,17 @@ module.exports.updateLigen = async function updateLigen(index = 0) {
   try {
     const ligen = response.ligen;
     for (const liga of ligen) {
-        const league = new Liga(liga);
-        await league.save().then(
-          (success) => {
-            console.log(`Created: ${liga.ligaId}`);
-          },
-          async (rejected) => {
-            if (rejected && rejected.code === 11000) {
-              console.log(`Updated: ${liga.ligaId}`);
-              await Liga.findOne({
-                ligaId: liga.ligaId,
-              }).updateOne(liga);
-            }
-          }
-        );
+        const [league, created] = await Liga.findOrCreate({
+          where: { ligaId: liga.ligaId },
+          defaults: liga
+        });
+        
+        if (created) {
+          console.log(`Created: ${liga.ligaId}`);
+        } else {
+          console.log(`Updated: ${liga.ligaId}`);
+          await league.update(liga);
+        }
     }
 
     if (response.hasMoreData) {
@@ -70,17 +68,75 @@ module.exports.updateLigen = async function updateLigen(index = 0) {
  * @returns {Promise} - A Promise that resolves when the matches data is updated.
  */
 module.exports.updateMatches = async function updateMatches() {
-  const ligen = await Liga.find({});
-  const requests = ligen.map((liga) => updateMatch(liga));
-  return await Promise.all(requests);
+  console.log('🏀 Starte Match-Update...');
+  
+  // 1. Alle Ligen holen
+  const ligen = await Liga.findAll();
+  console.log(`📋 ${ligen.length} Ligen gefunden`);
+  
+  // 2. Alle Matches holen und Club-IDs sammeln
+  const allClubIds = new Set();
+  const allMatches = [];
+  
+  for (const liga of ligen) {
+    console.log(`📊 Verarbeite Liga ${liga.ligaId}...`);
+    const matches = await getMatchesForLiga(liga);
+    if (matches && matches.length > 0) {
+      allMatches.push({ liga, matches });
+      
+      // Club-IDs sammeln
+      for (const match of matches) {
+        if (match.homeTeam && match.homeTeam.clubId) {
+          allClubIds.add(parseInt(match.homeTeam.clubId));
+        }
+        if (match.guestTeam && match.guestTeam.clubId) {
+          allClubIds.add(parseInt(match.guestTeam.clubId));
+        }
+        if (match.sr1 && match.sr1 !== "Pool" && !isNaN(match.sr1)) {
+          allClubIds.add(parseInt(match.sr1));
+        }
+        if (match.sr2 && match.sr2 !== "Pool" && !isNaN(match.sr2)) {
+          allClubIds.add(parseInt(match.sr2));
+        }
+      }
+    }
+  }
+  
+  console.log(`🎯 ${allClubIds.size} einzigartige Club-IDs gefunden`);
+  
+  // 3. Nur fehlende Clubs laden
+  if (allClubIds.size > 0) {
+    console.log('🏢 Prüfe welche Clubs fehlen...');
+    const existingClubs = await Club.findAll({
+      where: { clubId: Array.from(allClubIds) },
+      attributes: ['clubId']
+    });
+    const existingClubIds = new Set(existingClubs.map(club => club.clubId));
+    const missingClubIds = Array.from(allClubIds).filter(id => !existingClubIds.has(id));
+    
+    if (missingClubIds.length > 0) {
+      console.log(`📥 Lade ${missingClubIds.length} fehlende Clubs von ${allClubIds.size} total...`);
+      await clubService.getMultipleClubs(missingClubIds);
+      console.log('✅ Fehlende Clubs geladen');
+    } else {
+      console.log('✅ Alle Clubs bereits in der Datenbank vorhanden');
+    }
+  }
+  
+  // 4. Matches verarbeiten (jetzt sind alle Clubs bereits geladen)
+  console.log('⚽ Verarbeite Matches...');
+  const requests = allMatches.map(({ liga, matches }) => processMatchesForLiga(liga, matches));
+  await Promise.all(requests);
+  
+  console.log('✅ Match-Update abgeschlossen');
 };
 
 /**
- * This function updates the match data for a specific league.
+ * Holt alle Matches für eine Liga
  * @param {object} liga - The league data.
- * @returns {Promise} - A Promise that resolves when the match data for the league is updated.
+ * @returns {Promise<Array>} - Array of matches with additional data
  */
-async function updateMatch(liga) {
+async function getMatchesForLiga(liga) {
   // Warten bis SDK geladen ist
   if (!BasketballBundSDK) {
     const { BasketballBundSDK: SDK } = await import("basketball-bund-sdk");
@@ -91,76 +147,93 @@ async function updateMatch(liga) {
   const data = await sdk.competition.getSpielplan({
     competitionId: liga.ligaId,
   });
-  if (!data) {
-    console.log(`No data returned for liga ${liga.ligaId}`);
-    return;
+  
+  if (!data || !data.matches) {
+    console.log(`No matches found for liga ${liga.ligaId}`);
+    return [];
   }
 
-  try {
-    const matches = data.matches;
-    if (!matches) {
-      console.log(`No matches found for liga ${liga.ligaId}`);
-      return;
+  const matches = data.matches;
+  const enrichedMatches = [];
+
+  for (const match of matches) {
+    try {
+      const matchInfo = await sdk.match.getMatchInfo({
+        matchId: match.matchId,
+      });
+      
+      // SR-Daten extrahieren
+      let sr1 = null;
+      let sr2 = null;
+      if (matchInfo.matchInfo.srList) {
+        if (matchInfo.matchInfo.srList[0]) {
+          if (matchInfo.matchInfo.srList[0].personData) {
+            if (matchInfo.matchInfo.srList[0].personData.vorname.toLowerCase() === "verein") {
+              sr1 = matchInfo.matchInfo.srList[0].personData.nachname;
+            } else {
+              sr1 = "besetzt";
+            }
+          }
+        }
+        if (matchInfo.matchInfo.srList[1]) {
+          if (matchInfo.matchInfo.srList[1].personData) {
+            if (matchInfo.matchInfo.srList[1].personData.vorname.toLowerCase() === "verein") {
+              sr2 = matchInfo.matchInfo.srList[1].personData.nachname;
+            } else {
+              sr2 = "besetzt";
+            }
+          }
+        }
+      }
+
+      enrichedMatches.push({
+        ...match,
+        homeTeam: matchInfo.homeTeam,
+        guestTeam: matchInfo.guestTeam,
+        sr1,
+        sr2,
+        matchInfo: matchInfo.matchInfo
+      });
+    } catch (error) {
+      console.error(`Fehler beim Laden von Match ${match.matchId}:`, error.message);
+      enrichedMatches.push(match);
     }
-
-    const promise = matches.map((match, index) =>
-      matchRef(match, index, matches.length, liga)
-    );
-    await Promise.all(promise);
-    return await liga.save();
-  } catch (error) {
-    console.log(error);
   }
+
+  return enrichedMatches;
+}
+
+/**
+ * Verarbeitet alle Matches für eine Liga (nachdem alle Clubs geladen wurden)
+ * @param {object} liga - The league data.
+ * @param {Array} matches - Array of enriched matches
+ * @returns {Promise} - A Promise that resolves when all matches are processed
+ */
+async function processMatchesForLiga(liga, matches) {
+  console.log(`⚽ Verarbeite ${matches.length} Matches für Liga ${liga.ligaId}`);
+  
+  const promise = matches.map((match, index) =>
+    matchRef(match, index, matches.length, liga)
+  );
+  await Promise.all(promise);
+  return await liga.save();
 }
 
 /**
  * This function updates the referee data for a specific match.
- * @param {object} _m - The match data.
+ * @param {object} _m - The enriched match data.
  * @param {number} index - The index of the match.
  * @param {number} max - The total number of matches.
  * @param {object} liga - The league data.
  * @returns {Promise} - A Promise that resolves when the referee data for the match is updated.
  */
 async function matchRef(_m, index, max, liga) {
-  // Warten bis SDK geladen ist
-  if (!BasketballBundSDK) {
-    const { BasketballBundSDK: SDK } = await import("basketball-bund-sdk");
-    BasketballBundSDK = SDK;
-  }
-
-  const sdk = new BasketballBundSDK();
-  const matchInfo = await sdk.match.getMatchInfo({
-    matchId: _m.matchId,
-  });
-  var sr1 = null;
-  var sr2 = null;
-  if (matchInfo.matchInfo.srList) {
-    if (matchInfo.matchInfo.srList[0]) {
-      if (matchInfo.matchInfo.srList[0].personData) {
-        if (
-          matchInfo.matchInfo.srList[0].personData.vorname.toLowerCase() ===
-          "verein"
-        ) {
-          sr1 = matchInfo.matchInfo.srList[0].personData.nachname;
-        } else {
-          sr1 = "Pool";
-        }
-      }
-    }
-    if (matchInfo.matchInfo.srList[1]) {
-      if (matchInfo.matchInfo.srList[1].personData) {
-        if (
-          matchInfo.matchInfo.srList[1].personData.vorname.toLowerCase() ===
-          "verein"
-        ) {
-          sr2 = matchInfo.matchInfo.srList[1].personData.nachname;
-        } else {
-          sr2 = "Pool";
-        }
-      }
-    }
-  }
-  // Lade zuerst den Vereinsnamen des Heimteams
+  // Die Match-Daten sind bereits angereichert
+  const matchInfo = _m;
+  let sr1 = _m.sr1;
+  let sr2 = _m.sr2;
+  
+  // Hole Club-Namen aus dem bereits geladenen Cache
   let homeTeamClubName = null;
   if (matchInfo.homeTeam && matchInfo.homeTeam.clubId) {
     try {
@@ -172,7 +245,7 @@ async function matchRef(_m, index, max, liga) {
     }
   }
 
-  // Lade Club-Namen für sr1 und sr2, falls sie Club-IDs sind
+  // Hole Club-Namen für sr1 und sr2 aus dem bereits geladenen Cache
   let sr1ClubName = null;
   let sr2ClubName = null;
   
@@ -182,7 +255,7 @@ async function matchRef(_m, index, max, liga) {
       sr1ClubName = sr1Club.vereinsname;
     } catch (error) {
       console.error(`Fehler beim Laden von Club ${sr1}:`, error.message);
-      sr1ClubName = `Unbekannter Verein (${sr1})`;
+      sr1ClubName = sr1.toString();
     }
   }
   
@@ -192,7 +265,7 @@ async function matchRef(_m, index, max, liga) {
       sr2ClubName = sr2Club.vereinsname;
     } catch (error) {
       console.error(`Fehler beim Laden von Club ${sr2}:`, error.message);
-      sr2ClubName = `Unbekannter Verein (${sr2})`;
+      sr2ClubName = sr2.toString();
     }
   }
 
@@ -219,10 +292,10 @@ async function matchRef(_m, index, max, liga) {
     kickoffTime: matchInfo.kickoffTime,
     verzicht: matchInfo.verzicht,
     abgesagt: matchInfo.abgesagt,
-    liganame: matchInfo.ligaData.liganame,
-    homeTeam: matchInfo.homeTeam.teamname,
-    guestTeam: matchInfo.guestTeam.teamname,
-    spielfeld: matchInfo.matchInfo.spielfeld.bezeichnung,
+    liganame: matchInfo.ligaData ? matchInfo.ligaData.liganame : liga.liganame || 'Unbekannte Liga',
+    homeTeam: matchInfo.homeTeam ? matchInfo.homeTeam.teamname : 'Unbekanntes Team',
+    guestTeam: matchInfo.guestTeam ? matchInfo.guestTeam.teamname : 'Unbekanntes Team',
+    spielfeld: matchInfo.matchInfo && matchInfo.matchInfo.spielfeld ? matchInfo.matchInfo.spielfeld.bezeichnung : 'Unbekannt',
     sr1: sr1,
     sr1Basar: false,
     sr1Besetzt: false,
@@ -236,68 +309,55 @@ async function matchRef(_m, index, max, liga) {
     sr2Info: null,
     sr2Name: sr2ClubName,
   };
-  const m = new Match(match);
+  const [matchRef, created] = await Match.findOrCreate({
+    where: { matchId: match.matchId },
+    defaults: match
+  });
 
-  const matchRef = await m.save().then(
-    (success) => {
-      console.log(`${liga.ligaId}: CREATE ${index} / ${max}`);
-      return success._id;
-    },
-    async (rejected) => {
-      if (rejected && rejected.code === 11000) {
-        const result = await Match.findOne({
-          matchId: match.matchId,
-        });
-        if (result.homeTeam !== match.homeTeam) {
-          await Match.findOneAndUpdate(
-            {
-              matchId: match.matchId,
-            },
-            {
-              homeTeam: matchInfo.homeTeam.teamname,
-            }
-          );
-        }
-        if (result.guestTeam !== match.guestTeam) {
-          await Match.findOneAndUpdate(
-            {
-              matchId: match.matchId,
-            },
-            {
-              guestTeam: matchInfo.guestTeam.teamname,
-            }
-          );
-        }
+  if (created) {
+    console.log(`${liga.ligaId}: CREATE ${index} / ${max}`);
+  } else {
+    // Prüfe ob Update nötig ist
+    if (matchRef.homeTeam !== match.homeTeam) {
+      await matchRef.update({
+        homeTeam: matchInfo.homeTeam.teamname,
+      });
+    }
+    if (matchRef.guestTeam !== match.guestTeam) {
+      await matchRef.update({
+        guestTeam: matchInfo.guestTeam.teamname,
+      });
+    }
         if (
-          result.kickoffDate !== match.kickoffDate ||
-          result.kickoffTime !== match.kickoffTime ||
-          result.verzicht !== match.verzicht ||
-          result.abgesagt !== match.abgesagt
+          matchRef.kickoffDate !== match.kickoffDate ||
+          matchRef.kickoffTime !== match.kickoffTime ||
+          matchRef.verzicht !== match.verzicht ||
+          matchRef.abgesagt !== match.abgesagt
         ) {
-          if (result.sr1Basar || result.sr1Besetzt) {
-            const user = await User.find({ club: result.sr1 });
-            const date = new Date(result.kickoffDate);
+          if (matchRef.sr1Basar || matchRef.sr1Besetzt) {
+            const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr1] } } });
+            const date = new Date(matchRef.kickoffDate);
             const newDate = new Date(match.kickoffDate);
             await mail(
-              result.sr1Mail
-                ? [...user.map((_u) => _u.email), result.sr1Mail]
+              matchRef.sr1Mail
+                ? [...user.map((_u) => _u.email), matchRef.sr1Mail]
                 : user.map((_u) => _u.email),
               "[SPIELEBASAR] Info Veränderung Spielplan",
               getEmailText(
                 "",
                 "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung entfällt!",
                 false,
-                `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                  result.matchNo
+                `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                  matchRef.matchNo
                 }<br/>${date.getDate()}.${
                   date.getMonth() + 1
-                }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                  result.spielfeld
+                }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                  matchRef.spielfeld
                 }<br/>
-                                            ${result.homeTeam} - ${
-                  result.guestTeam
-                }<br/>${result.sr1} ${
-                  result.sr2
+                                            ${matchRef.homeTeam} - ${
+                  matchRef.guestTeam
+                }<br/>${matchRef.sr1} ${
+                  matchRef.sr2
                 }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                   newDate.getMonth() + 1
                 }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -305,41 +365,41 @@ async function matchRef(_m, index, max, liga) {
                   match.homeTeam
                 } - ${match.guestTeam}<br/>${match.sr1} ${match.sr2}<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr1Bonus
+                                              matchRef.sr1Bonus
                                             }<br/>${
-                  result.sr1Name ? result.sr1Name : "[*Keine Name hinterlegt*]"
+                  matchRef.sr1Name ? matchRef.sr1Name : "[*Keine Name hinterlegt*]"
                 }<br/>${
-                  result.sr1Info
-                    ? result.sr1Info
+                  matchRef.sr1Info
+                    ? matchRef.sr1Info
                     : "[*Keine Informationen hinterlegt*]"
                 }`
               )
             );
           }
-          if (result.sr2Basar || result.sr2Besetzt) {
-            const user = await User.find({ club: result.sr2 });
-            const date = new Date(result.kickoffDate);
+          if (matchRef.sr2Basar || matchRef.sr2Besetzt) {
+            const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr2] } } });
+            const date = new Date(matchRef.kickoffDate);
             const newDate = new Date(match.kickoffDate);
             await mail(
-              result.sr2Mail
-                ? [...user.map((_u) => _u.email), result.sr2Mail]
+              matchRef.sr2Mail
+                ? [...user.map((_u) => _u.email), matchRef.sr2Mail]
                 : user.map((_u) => _u.email),
               "[SPIELEBASAR] Info Veränderung Spielplan",
               getEmailText(
                 "",
                 "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung entfällt!",
                 false,
-                `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                  result.matchNo
+                `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                  matchRef.matchNo
                 }<br/>${date.getDate()}.${
                   date.getMonth() + 1
-                }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                  result.spielfeld
+                }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                  matchRef.spielfeld
                 }<br/>
-                                            ${result.homeTeam} - ${
-                  result.guestTeam
-                }<br/>${result.sr1} ${
-                  result.sr2
+                                            ${matchRef.homeTeam} - ${
+                  matchRef.guestTeam
+                }<br/>${matchRef.sr1} ${
+                  matchRef.sr2
                 }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                   newDate.getMonth() + 1
                 }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -347,46 +407,46 @@ async function matchRef(_m, index, max, liga) {
                   match.homeTeam
                 } - ${match.guestTeam}<br/>${match.sr1} ${match.sr2}<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr2Bonus
+                                              matchRef.sr2Bonus
                                             }<br/>${
-                  result.sr2Name ? result.sr2Name : "[*Keine Name hinterlegt*]"
+                  matchRef.sr2Name ? matchRef.sr2Name : "[*Keine Name hinterlegt*]"
                 }<br/>${
-                  result.sr2Info
-                    ? result.sr2Info
+                  matchRef.sr2Info
+                    ? matchRef.sr2Info
                     : "[*Keine Informationen hinterlegt*]"
                 }`
               )
             );
           }
-          await result.updateOne(match);
+          await matchRef.update(match);
           console.log(`${liga.ligaId}: UPDATED ${index} / ${max}`);
         } else {
-          if (result.sr1 !== match.sr1 || result.sr2 !== match.sr2) {
-            if (result.sr2 !== match.sr2) {
-              if (result.sr2Basar || result.sr2Besetzt) {
-                const user = await User.find({ club: result.sr2 });
-                const date = new Date(result.kickoffDate);
+          if (matchRef.sr1 !== match.sr1 || matchRef.sr2 !== match.sr2) {
+            if (matchRef.sr2 !== match.sr2) {
+              if (matchRef.sr2Basar || matchRef.sr2Besetzt) {
+                const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr2] } } });
+                const date = new Date(matchRef.kickoffDate);
                 const newDate = new Date(match.kickoffDate);
                 await mail(
-                  result.sr2Mail
-                    ? [...user.map((_u) => _u.email), result.sr2Mail]
+                  matchRef.sr2Mail
+                    ? [...user.map((_u) => _u.email), matchRef.sr2Mail]
                     : user.map((_u) => _u.email),
                   "[SPIELEBASAR] Info Veränderung Spielplan",
                   getEmailText(
                     "",
                     "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung entfällt!",
                     false,
-                    `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                      result.matchNo
+                    `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                      matchRef.matchNo
                     }<br/>${date.getDate()}.${
                       date.getMonth() + 1
-                    }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                      result.spielfeld
+                    }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                      matchRef.spielfeld
                     }<br/>
-                                            ${result.homeTeam} - ${
-                      result.guestTeam
-                    }<br/>${result.sr1} ${
-                      result.sr2
+                                            ${matchRef.homeTeam} - ${
+                      matchRef.guestTeam
+                    }<br/>${matchRef.sr1} ${
+                      matchRef.sr2
                     }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                       newDate.getMonth() + 1
                     }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -396,20 +456,20 @@ async function matchRef(_m, index, max, liga) {
                       match.sr2
                     }<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr2Bonus
+                                              matchRef.sr2Bonus
                                             }<br/>${
-                      result.sr2Name
-                        ? result.sr2Name
+                      matchRef.sr2Name
+                        ? matchRef.sr2Name
                         : "[*Keine Name hinterlegt*]"
                     }<br/>${
-                      result.sr2Info
-                        ? result.sr2Info
+                      matchRef.sr2Info
+                        ? matchRef.sr2Info
                         : "[*Keine Informationen hinterlegt*]"
                     }`
                   )
                 );
               }
-              await result.updateOne({
+              await matchRef.update({
                 sr2: sr2,
                 sr2Basar: false,
                 sr2Besetzt: false,
@@ -419,31 +479,31 @@ async function matchRef(_m, index, max, liga) {
                 sr2Name: null,
               });
             }
-            if (result.sr1 !== match.sr1) {
-              if (result.sr1Basar || result.sr1Besetzt) {
-                const user = await User.find({ club: result.sr1 });
-                const date = new Date(result.kickoffDate);
+            if (matchRef.sr1 !== match.sr1) {
+              if (matchRef.sr1Basar || matchRef.sr1Besetzt) {
+                const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr1] } } });
+                const date = new Date(matchRef.kickoffDate);
                 const newDate = new Date(match.kickoffDate);
                 await mail(
-                  result.sr1Mail
-                    ? [...user.map((_u) => _u.email), result.sr1Mail]
+                  matchRef.sr1Mail
+                    ? [...user.map((_u) => _u.email), matchRef.sr1Mail]
                     : user.map((_u) => _u.email),
                   "[SPIELEBASAR] Info Veränderung Spielplan",
                   getEmailText(
                     "",
                     "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung entfällt!",
                     false,
-                    `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                      result.matchNo
+                    `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                      matchRef.matchNo
                     }<br/>${date.getDate()}.${
                       date.getMonth() + 1
-                    }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                      result.spielfeld
+                    }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                      matchRef.spielfeld
                     }<br/>
-                                            ${result.homeTeam} - ${
-                      result.guestTeam
-                    }<br/>${result.sr1} ${
-                      result.sr2
+                                            ${matchRef.homeTeam} - ${
+                      matchRef.guestTeam
+                    }<br/>${matchRef.sr1} ${
+                      matchRef.sr2
                     }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                       newDate.getMonth() + 1
                     }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -453,20 +513,20 @@ async function matchRef(_m, index, max, liga) {
                       match.sr2
                     }<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr1Bonus
+                                              matchRef.sr1Bonus
                                             }<br/>${
-                      result.sr1Name
-                        ? result.sr1Name
+                      matchRef.sr1Name
+                        ? matchRef.sr1Name
                         : "[*Keine Name hinterlegt*]"
                     }<br/>${
-                      result.sr1Info
-                        ? result.sr1Info
+                      matchRef.sr1Info
+                        ? matchRef.sr1Info
                         : "[*Keine Informationen hinterlegt*]"
                     }`
                   )
                 );
               }
-              await result.updateOne({
+              await matchRef.update({
                 sr1: sr1,
                 sr1Basar: false,
                 sr1Besetzt: false,
@@ -479,10 +539,10 @@ async function matchRef(_m, index, max, liga) {
 
             console.log(`${liga.ligaId}: REF ${index} / ${max}`);
           }
-          if (result.spielfeld !== match.spielfeld) {
-            if (result.sr1Basar || result.sr1Besetzt) {
-              const user = await User.find({ club: result.sr1 });
-              const date = new Date(result.kickoffDate);
+          if (matchRef.spielfeld !== match.spielfeld) {
+            if (matchRef.sr1Basar || matchRef.sr1Besetzt) {
+              const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr1] } } });
+              const date = new Date(matchRef.kickoffDate);
               const newDate = new Date(match.kickoffDate);
               await mail(
                 user.map((_u) => _u.email),
@@ -491,17 +551,17 @@ async function matchRef(_m, index, max, liga) {
                   "",
                   "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung bleibt bestehen!",
                   false,
-                  `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                    result.matchNo
+                  `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                    matchRef.matchNo
                   }<br/>${date.getDate()}.${
                     date.getMonth() + 1
-                  }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                    result.spielfeld
+                  }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                    matchRef.spielfeld
                   }<br/>
-                                            ${result.homeTeam} - ${
-                    result.guestTeam
-                  }<br/>${result.sr1} ${
-                    result.sr2
+                                            ${matchRef.homeTeam} - ${
+                    matchRef.guestTeam
+                  }<br/>${matchRef.sr1} ${
+                    matchRef.sr2
                   }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                     newDate.getMonth() + 1
                   }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -509,22 +569,22 @@ async function matchRef(_m, index, max, liga) {
                     match.homeTeam
                   } - ${match.guestTeam}<br/>${match.sr1} ${match.sr2}<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr1Bonus
+                                              matchRef.sr1Bonus
                                             }<br/>${
-                    result.sr1Name
-                      ? result.sr1Name
+                    matchRef.sr1Name
+                      ? matchRef.sr1Name
                       : "[*Keine Name hinterlegt*]"
                   }<br/>${
-                    result.sr1Info
-                      ? result.sr1Info
+                    matchRef.sr1Info
+                      ? matchRef.sr1Info
                       : "[*Keine Informationen hinterlegt*]"
                   }`
                 )
               );
             }
-            if (result.sr2Basar || result.sr2Besetzt) {
-              const user = await User.find({ club: result.sr2 });
-              const date = new Date(result.kickoffDate);
+            if (matchRef.sr2Basar || matchRef.sr2Besetzt) {
+              const user = await User.findAll({ where: { club: { [Op.contains]: [matchRef.sr2] } } });
+              const date = new Date(matchRef.kickoffDate);
               const newDate = new Date(match.kickoffDate);
               await mail(
                 user.map((_u) => _u.email),
@@ -533,17 +593,17 @@ async function matchRef(_m, index, max, liga) {
                   "",
                   "du erhälst diese Mail, da es eine Veränderung im Spielplan gab und dieses Spiel im Basar oder als besetzt markiert hast. Die Ansetzung bleibt bestehen!",
                   false,
-                  `<strong>Spiel (alt):</strong><br/>${result.liganame}  ${
-                    result.matchNo
+                  `<strong>Spiel (alt):</strong><br/>${matchRef.liganame}  ${
+                    matchRef.matchNo
                   }<br/>${date.getDate()}.${
                     date.getMonth() + 1
-                  }.${date.getFullYear()} ${result.kickoffTime}<br/>${
-                    result.spielfeld
+                  }.${date.getFullYear()} ${matchRef.kickoffTime}<br/>${
+                    matchRef.spielfeld
                   }<br/>
-                                            ${result.homeTeam} - ${
-                    result.guestTeam
-                  }<br/>${result.sr1} ${
-                    result.sr2
+                                            ${matchRef.homeTeam} - ${
+                    matchRef.guestTeam
+                  }<br/>${matchRef.sr1} ${
+                    matchRef.sr2
                   }<br/><br/><strong>Spiel (neu):</strong><br/>${newDate.getDate()}.${
                     newDate.getMonth() + 1
                   }.${newDate.getFullYear()} ${match.kickoffTime}<br/>
@@ -551,20 +611,20 @@ async function matchRef(_m, index, max, liga) {
                     match.homeTeam
                   } - ${match.guestTeam}<br/>${match.sr1} ${match.sr2}<br/><br/>
                                             <strong>Folgende Infos hattest du hinterlegt:</strong><br/>Bonus: ${
-                                              result.sr2Bonus
+                                              matchRef.sr2Bonus
                                             }<br/>${
-                    result.sr2Name
-                      ? result.sr2Name
+                    matchRef.sr2Name
+                      ? matchRef.sr2Name
                       : "[*Keine Name hinterlegt*]"
                   }<br/>${
-                    result.sr2Info
-                      ? result.sr2Info
+                    matchRef.sr2Info
+                      ? matchRef.sr2Info
                       : "[*Keine Informationen hinterlegt*]"
                   }`
                 )
               );
             }
-            await result.updateOne({
+            await matchRef.update({
               spielfeld: match.spielfeld,
             });
             console.log(`${liga.ligaId}: LOKATION ${index} / ${max}`);
@@ -572,12 +632,6 @@ async function matchRef(_m, index, max, liga) {
             console.log(`${liga.ligaId}: SKIPPED ${index} / ${max}`);
           }
         }
-        return result._id;
-      }
-    }
-  );
-
-  if (liga.matches.indexOf(matchRef) === -1) {
-    liga.matches.push(matchRef);
+    console.log(`${liga.ligaId}: UPDATE ${index} / ${max}`);
   }
 }

@@ -21,6 +21,8 @@ const errorHandler = require('_middleware/error-handler');
  * Finally, it starts the server on the specified port and logs a message.
  */
 
+
+
 // start server
 const port = process.env.NODE_ENV === 'production' ? (process.env.PORT || 3000) : process.env.DEV_PORT;
 
