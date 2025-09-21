@@ -12,7 +12,7 @@
  */
 module.exports = {
     apps: [{
-        name: "srbasar-backend",
+        name: "hannover-srbasar-backend",
         script: "./server.js",
         watch: process.env.NODE_ENV !== 'production',
         ignore_watch: [
