@@ -7,22 +7,20 @@ const {ROLES} = require ('../_init/roles') // Importing ROLES from roles module
  * @param {object} res - The response object.
  * @param {function} next - The next middleware function.
  */
-checkDuplicateUsernameOrEmail = (req, res, next) => {
-    User.findOne({
-      email: req.body.email
-    }).exec((err, user) => {
-      if (err) {
-        res.status(500).send({ message: err });
-        return;
-      }
+checkDuplicateUsernameOrEmail = async (req, res, next) => {
+    try {
+      const user = await User.findOne({
+        where: { email: req.body.email }
+      });
 
       if (user) {
-        res.status(400).send({ message: "Failed! Email is already in use!" });
-        return;
+        return res.status(400).send({ message: "Failed! Email is already in use!" });
       }
 
       next();
-    });
+    } catch (err) {
+      res.status(500).send({ message: err.message });
+    }
 }
 
 /**
