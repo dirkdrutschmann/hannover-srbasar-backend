@@ -1,6 +1,7 @@
 const { mail, getEmailText } = require("../_mailer/mailer"); // Importing mail and getEmailText from mailer
-const { Match, User } = require("../_models"); // Importing Match and User models
+const { Match, User, Club } = require("../_models"); // Importing Match, User and Club models
 const { Op } = require('sequelize'); // Importing Sequelize operators
+const clubService = require('../_services/clubService'); // Importing club service
 
 /**
  * This function lists all the matches for a club.
@@ -17,7 +18,16 @@ exports.list = async (req, res) => {
                 ]
             }
         });
-        res.json(ref);
+
+        // Club-Namen sind bereits in sr1Name und sr2Name gespeichert
+        const enrichedRef = ref.map(match => {
+            const matchData = match.toJSON();
+            matchData.sr1ClubName = match.sr1Name;
+            matchData.sr2ClubName = match.sr2Name;
+            return matchData;
+        });
+
+        res.json(enrichedRef);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -41,8 +51,16 @@ exports.all = async (req, res) => {
                    game.sr1 !== null && 
                    game.sr2 !== null;
         });
+
+        // Club-Namen sind bereits in sr1Name und sr2Name gespeichert
+        const enrichedRef = filteredRef.map(match => {
+            const matchData = match.toJSON();
+            matchData.sr1ClubName = match.sr1Name;
+            matchData.sr2ClubName = match.sr2Name;
+            return matchData;
+        });
         
-        res.json(filteredRef);
+        res.json(enrichedRef);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -55,7 +73,10 @@ exports.all = async (req, res) => {
  */
 exports.uebernehmen = async (req, res) => {
     try {
-        const game = await Match.findOne({ where: { matchId: parseInt(req.params.game) } });
+        const game = await Match.findOne({ 
+            where: { matchId: parseInt(req.params.game) }
+        });
+        
         if (!game) {
             res.status(404);
             return res.send({ error: "Game doesn't exist!" });
@@ -72,8 +93,13 @@ exports.uebernehmen = async (req, res) => {
         }
         
         const date = new Date(game.kickoffDate);
+        
+        // Club-Namen aus gespeicherten Daten verwenden
+        const sr1ClubName = game.sr1Name || 'Unbekannter Verein';
+        const sr2ClubName = game.sr2Name || 'Unbekannter Verein';
+        
         await mail(users.map((user) => user.email), "[SPIELEBASAR] Übernahme " + game.liganame + game.matchNo,
-            getEmailText("", `es gibt eine Übernahmeanfrage von ${req.body.name} <br/><br/><strong>Spiel:</strong><br/>${game.liganame}  ${game.matchNo}<br/>${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()} ${game.kickoffTime} ${game.spielfeld}<br/>${game.homeTeam} - ${game.guestTeam}<br/><br/><strong>Schiedsrichter:</strong><br/><strong>Name :</strong> ${req.body.name}${req.body.email ? `<br/><strong>E-Mail:</strong> ` + req.body.email : ""}${req.body.mobile ? `<br/><strong>Handy:</strong> ` + req.body.mobile : ""}<br/><strong>Lizenz:</strong> ${req.body.lizenz}<br/><br/>${req.body.message ? `<strong>Nachricht:</strong><br/><br/>${req.body.message}<br/>` : ""}`, !!req.body.mobile,
+            getEmailText("", `es gibt eine Übernahmeanfrage von ${req.body.name} <br/><br/><strong>Spiel:</strong><br/>${game.liganame}  ${game.matchNo}<br/>${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()} ${game.kickoffTime} ${game.spielfeld}<br/>${game.homeTeam} - ${game.guestTeam}<br/><br/><strong>Schiedsrichter:</strong><br/><strong>SR1:</strong> ${sr1ClubName}<br/><strong>SR2:</strong> ${sr2ClubName}<br/><br/><strong>Anfrage von:</strong><br/><strong>Name:</strong> ${req.body.name}${req.body.email ? `<br/><strong>E-Mail:</strong> ` + req.body.email : ""}${req.body.mobile ? `<br/><strong>Handy:</strong> ` + req.body.mobile : ""}<br/><strong>Lizenz:</strong> ${req.body.lizenz}<br/><br/>${req.body.message ? `<strong>Nachricht:</strong><br/><br/>${req.body.message}<br/>` : ""}`, !!req.body.mobile,
                 ``, `${process.env.WHATSAPP_API_URL}/${req.body.mobile}?text=${encodeURI(`Hallo ${req.body.name}, vielen Dank für deine Anfrage,  hiermit habe ich dich für das Spiel *${game.liganame}${game.matchNo}* am *${new Date(game.kickoffDate).getDate()}.${new Date(game.kickoffDate).getMonth() + 1}.${new Date(game.kickoffDate).getFullYear()}* um *${game.kickoffTime}* *${game.spielfeld}* für *${req.body.sr}* angesetzt. Liebe Grüße`)}`, "Per Whatsapp antworten"),
             req.body.email ? req.body.email : false);
     } catch (error) {
@@ -118,6 +144,10 @@ exports.basar = async (req, res) => {
             const newValue = { ...game.toJSON() };
             delete newValue.sr1Info;
             delete newValue.sr2Info;
+            
+            // Club-Namen aus gespeicherten Daten verwenden
+            newValue.sr1ClubName = game.sr1Name;
+            newValue.sr2ClubName = game.sr2Name;
             
             if (game.sr1Basar) {
                 const sr1User = users.filter((user) => user.club && user.club.includes(game.sr1));

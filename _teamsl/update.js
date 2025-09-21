@@ -1,6 +1,7 @@
 const axios = require("axios"); // Importing axios for making HTTP requests
 const { mail, getEmailText } = require("../_mailer/mailer"); // Importing mail and getEmailText from mailer
 const { Liga, Match, User } = require("../_models"); // Importing Liga, Match, User models
+const clubService = require('../_services/clubService'); // Importing club service
 
 // Dynamischer Import für ES6-Modul
 let BasketballBundSDK;
@@ -25,12 +26,12 @@ module.exports.updateLigen = async function updateLigen(index = 0) {
   const response = await sdk.wam.getLigaList({
     akgGeschlechtIds: [],
     altersklasseIds: [],
-    gebietIds: [],
+    gebietIds: [101],
     ligatypIds: [],
     sortBy: 0,
-    spielklasseIds: [],
+    spielklasseIds: [722],
     token: "",
-    verbandIds: [3],
+    verbandIds: [7],
     startAtIndex: index,
   });
   if (!response) {
@@ -40,7 +41,6 @@ module.exports.updateLigen = async function updateLigen(index = 0) {
   try {
     const ligen = response.ligen;
     for (const liga of ligen) {
-      if (liga.verbandId !== 30) {
         const league = new Liga(liga);
         await league.save().then(
           (success) => {
@@ -55,7 +55,6 @@ module.exports.updateLigen = async function updateLigen(index = 0) {
             }
           }
         );
-      }
     }
 
     if (response.hasMoreData) {
@@ -161,6 +160,52 @@ async function matchRef(_m, index, max, liga) {
       }
     }
   }
+  // Lade zuerst den Vereinsnamen des Heimteams
+  let homeTeamClubName = null;
+  if (matchInfo.homeTeam && matchInfo.homeTeam.clubId) {
+    try {
+      const homeTeamClub = await clubService.getOrCreateClub(parseInt(matchInfo.homeTeam.clubId));
+      homeTeamClubName = homeTeamClub.vereinsname;
+    } catch (error) {
+      console.error(`Fehler beim Laden des Heimteam-Clubs ${matchInfo.homeTeam.clubId}:`, error.message);
+      homeTeamClubName = matchInfo.homeTeam.teamname; // Fallback auf Teamname
+    }
+  }
+
+  // Lade Club-Namen für sr1 und sr2, falls sie Club-IDs sind
+  let sr1ClubName = null;
+  let sr2ClubName = null;
+  
+  if (sr1 && sr1 !== "Pool" && !isNaN(sr1)) {
+    try {
+      const sr1Club = await clubService.getOrCreateClub(parseInt(sr1));
+      sr1ClubName = sr1Club.vereinsname;
+    } catch (error) {
+      console.error(`Fehler beim Laden von Club ${sr1}:`, error.message);
+      sr1ClubName = `Unbekannter Verein (${sr1})`;
+    }
+  }
+  
+  if (sr2 && sr2 !== "Pool" && !isNaN(sr2)) {
+    try {
+      const sr2Club = await clubService.getOrCreateClub(parseInt(sr2));
+      sr2ClubName = sr2Club.vereinsname;
+    } catch (error) {
+      console.error(`Fehler beim Laden von Club ${sr2}:`, error.message);
+      sr2ClubName = `Unbekannter Verein (${sr2})`;
+    }
+  }
+
+  // Wenn sr1 oder sr2 null sind, setze den Vereinsnamen des Heimteams
+  if(sr1 === null && homeTeamClubName){
+    sr1 = homeTeamClubName;
+    sr1ClubName = homeTeamClubName;
+  }
+  if(sr2 === null && homeTeamClubName){
+    sr2 = homeTeamClubName;
+    sr2ClubName = homeTeamClubName;
+  }
+
   if (!matchInfo.homeTeam || !matchInfo.guestTeam) {
     console.log("SKIPPED: KEIN TEAM => " + matchInfo.matchId);
     return;
@@ -183,12 +228,13 @@ async function matchRef(_m, index, max, liga) {
     sr1Besetzt: false,
     sr1Bonus: null,
     sr1Info: null,
-    sr1Name: null,
+    sr1Name: sr1ClubName,
     sr2: sr2,
     sr2Basar: false,
     sr2Besetzt: false,
     sr2Bonus: null,
     sr2Info: null,
+    sr2Name: sr2ClubName,
   };
   const m = new Match(match);
 

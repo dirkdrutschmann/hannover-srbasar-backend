@@ -5,6 +5,7 @@ const Role = require('./role.model');
 const User = require('./user.model');
 const Link = require('./link.model');
 const Answer = require('./answer.model');
+const Club = require('./club.model');
 
 /**
  * Definiert die Assoziationen zwischen den Sequelize-Modellen
@@ -23,6 +24,9 @@ Answer.belongsTo(Link, { foreignKey: 'linkId', as: 'link' });
 // Liga hat viele Matches (über liganame) - diese Beziehung ist optional, da sie über String-Felder läuft
 // Liga.hasMany(Match, { foreignKey: 'liganame', sourceKey: 'liganame', as: 'matches' });
 // Match.belongsTo(Liga, { foreignKey: 'liganame', targetKey: 'liganame', as: 'liga' });
+
+// Club-Assoziationen werden über den Club-Service verwaltet
+// Keine direkten Foreign Keys, da sr1 und sr2 als Strings gespeichert werden
 
 // User und Role haben eine many-to-many Beziehung
 User.belongsToMany(Role, { 
@@ -54,5 +58,6 @@ module.exports = {
   Role,
   Link,
   Answer,
-  User
+  User,
+  Club
 };
