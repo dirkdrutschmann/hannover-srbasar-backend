@@ -1,13 +1,23 @@
 const { Club } = require('../_models');
-const { BasketballBundSDK } = require('basketball-bund-sdk');
 
 /**
  * Service für Club-Management und API-Integration
  */
 class ClubService {
     constructor() {
-        this.sdk = new BasketballBundSDK();
+        this.sdk = null; // Wird dynamisch geladen
         this.cache = new Map(); // In-Memory Cache für bessere Performance
+    }
+
+    /**
+     * Lädt das SDK dynamisch
+     */
+    async loadSDK() {
+        if (!this.sdk) {
+            const { BasketballBundSDK } = await import('basketball-bund-sdk');
+            this.sdk = new BasketballBundSDK();
+        }
+        return this.sdk;
     }
 
     /**
@@ -86,7 +96,8 @@ class ClubService {
      */
     async fetchClubFromAPI(clubId) {
         try {
-            const response = await this.sdk.club.getActualMatches({ clubId: clubId });
+            const sdk = await this.loadSDK();
+            const response = await sdk.club.getActualMatches({ clubId: clubId });
             
             if (response && response.data && response.data.club && response.data.club.vereinsname) {
                 return {
