@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken"); // Importing jsonwebtoken for token verification
 const {User, Role} = require('../_models/index') // Importing User and Role models
+const { Op } = require('sequelize'); // Importing Sequelize operators
 
 /**
  * Middleware function to verify the token in the request.
@@ -33,35 +34,30 @@ verifyToken = (req, res, next) => {
  * @param {object} res - The response object.
  * @param {function} next - The next middleware function.
  */
-isAdmin = (req, res, next) => {
-  User.findById(req.userId).exec((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
+isAdmin = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.userId, {
+      include: [{
+        model: Role,
+        as: 'roles',
+        through: { attributes: [] }
+      }]
+    });
+
+    if (!user) {
+      return res.status(404).send({ message: "User not found!" });
     }
 
-    Role.find(
-      {
-        _id: { $in: user.roles }
-      },
-      (err, roles) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
-
-        for (let i = 0; i < roles.length; i++) {
-          if (roles[i].name === "admin") {
-            next();
-            return;
-          }
-        }
-
-        res.status(403).send({ message: "Require Admin Role!" });
-        return;
-      }
-    );
-  });
+    const hasAdminRole = user.roles.some(role => role.name === "admin");
+    
+    if (hasAdminRole) {
+      next();
+    } else {
+      res.status(403).send({ message: "Require Admin Role!" });
+    }
+  } catch (err) {
+    res.status(500).send({ message: err.message });
+  }
 };
 
 /**
@@ -70,35 +66,30 @@ isAdmin = (req, res, next) => {
  * @param {object} res - The response object.
  * @param {function} next - The next middleware function.
  */
-isVRSW = (req, res, next) => {
-  User.findById(req.userId).exec((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
+isVRSW = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.userId, {
+      include: [{
+        model: Role,
+        as: 'roles',
+        through: { attributes: [] }
+      }]
+    });
+
+    if (!user) {
+      return res.status(404).send({ message: "User not found!" });
     }
 
-    Role.find(
-      {
-        _id: { $in: user.roles }
-      },
-      (err, roles) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
-
-        for (let i = 0; i < roles.length; i++) {
-          if (roles[i].name === "vrsw") {
-            next();
-            return;
-          }
-        }
-
-        res.status(403).send({ message: "Require VRSW Role!" });
-        return;
-      }
-    );
-  });
+    const hasVRSWRole = user.roles.some(role => role.name === "vrsw");
+    
+    if (hasVRSWRole) {
+      next();
+    } else {
+      res.status(403).send({ message: "Require VRSW Role!" });
+    }
+  } catch (err) {
+    res.status(500).send({ message: err.message });
+  }
 };
 
 /**
@@ -107,16 +98,19 @@ isVRSW = (req, res, next) => {
  * @param {object} res - The response object.
  * @param {function} next - The next middleware function.
  */
-getClub = (req, res, next) => {
-  User.findById(req.userId).exec((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
+getClub = async (req, res, next) => {
+  try {
+    const user = await User.findByPk(req.userId);
+    
+    if (!user) {
+      return res.status(404).send({ message: "User not found!" });
     }
+    
     req.club = user.club;
-    next()
-    return
-  });
+    next();
+  } catch (err) {
+    res.status(500).send({ message: err.message });
+  }
 }
 
 const authJwt = {
