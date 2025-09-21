@@ -5,6 +5,7 @@ const express = require('express');
 const path = require('path');
 const { Role } = require('./_models');
 const { testConnection, syncDatabase } = require('./_config/database');
+const cronService = require('./_services/cronService');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
@@ -50,8 +51,12 @@ async function startServer() {
         app.use(errorHandler);
         routes(app);
         
+        // Start Cron Service
+        cronService.start();
+        
         app.listen(port, () => {
             console.log('Server listening on port ' + port);
+            console.log('Cron-Service aktiviert');
         });
     } catch (err) {
         console.error("Server startup error:", err);
@@ -84,6 +89,19 @@ async function init() {
         console.error("Error initializing roles:", error);
     }
 }
+
+// Graceful Shutdown Handler
+process.on('SIGINT', () => {
+    console.log('\n🛑 SIGINT empfangen, beende Server...');
+    cronService.stop();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n🛑 SIGTERM empfangen, beende Server...');
+    cronService.stop();
+    process.exit(0);
+});
 
 // Start the server
 startServer();

@@ -1,35 +1,39 @@
 /**
- * This module exports an object that configures the applications managed by PM2.
- * The object has a single property, apps, which is an array of objects.
- * Each object in the array represents an application and has the following properties:
- * - name: The name of the application.
- * - script: The path to the script to run.
- * - watch: A boolean indicating whether to watch the script for changes and restart the application if changes are detected.
- * - ignore_watch: An array of paths to ignore when watching for changes.
- * - autorestart: A boolean indicating whether to automatically restart the application if it crashes or stops.
- * - instances: The number of instances of the application to run.
- * - exec_mode: The execution mode of the application. If set to "cluster", the application will be run in cluster mode.
- * - max_memory_restart: The maximum amount of memory the application can use before it is restarted.
- * - cron_restart: A cron pattern specifying when to restart the application. This property is only present in the second application.
+ * PM2 Ecosystem Configuration für Spielebasar Backend
+ * 
+ * Diese Konfiguration startet nur den Hauptserver, da Cron-Jobs
+ * jetzt über node-cron im Server-Prozess integriert sind.
+ * 
+ * Vorteile:
+ * - Weniger Prozesse zu verwalten
+ * - Bessere Ressourcennutzung
+ * - Einfachere Überwachung
+ * - Integrierte Fehlerbehandlung
  */
 module.exports = {
-    apps : [{
-        name   : "server",
-        script : "./server.js",
-        watch  : true,
-        ignore_watch : ["node_modules", "\\.git", "logs/*.log"],
+    apps: [{
+        name: "srbasar-backend",
+        script: "./server.js",
+        watch: process.env.NODE_ENV !== 'production',
+        ignore_watch: [
+            "node_modules",
+            "\\.git",
+            "logs/*.log",
+            "*.log",
+            "cron*.js",
+            "migrations/*"
+        ],
         autorestart: true,
-        instances : 1,
-        exec_mode : "cluster",
-        max_memory_restart : "500M"
-    },{
-        name   : "cron",
-        script : "./cron.js",
-        watch  : false,
-        autorestart: false,
-        cron_restart: '*/30 8-20 * * *',
-        ignore_watch : ["node_modules", "\\.git", "logs/*.log"],
-        max_memory_restart : "2G"
-    }
-]
-}
+        instances: process.env.NODE_ENV === 'production' ? 1 : 1,
+        exec_mode: "fork", // Fork-Modus für bessere Cron-Integration
+        max_memory_restart: "1G",
+        // Erweiterte PM2-Konfiguration
+        log_file: "./logs/combined.log",
+        out_file: "./logs/out.log",
+        error_file: "./logs/error.log",
+        log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+        merge_logs: true,
+        // Cron-Jobs sind jetzt im Server integriert
+        // Kein separater Cron-Prozess mehr nötig
+    }]
+};

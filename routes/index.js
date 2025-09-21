@@ -6,6 +6,7 @@ const ref = require("./ref.routes"); // Reference routes
 const update = require("./update.routes"); // Update routes
 const user = require("./user.routes"); // User routes
 const link = require("./link.routes"); // Link routes
+const cron = require("./cron.routes"); // Cron management routes
 
 /**
  * This function initializes all the routes for the application.
@@ -25,5 +26,6 @@ module.exports = function (app) {
     ref(app), // Initialize reference routes
     update(app), // Initialize update routes
     user(app), // Initialize user routes
-    link(app); // Initialize link routes
+    link(app), // Initialize link routes
+    app.use('/api/cron', cron); // Initialize cron management routes
 };
