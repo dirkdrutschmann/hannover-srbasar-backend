@@ -25,4 +25,13 @@ module.exports = function(app) {
    * - authJwt.verifyToken: To verify the token in the request.
    */
   app.post(PREFIX + 'update' , [authJwt.verifyToken], controller.update);
+
+  /**
+   * Route for deleting a user.
+   * It requires the following middleware:
+   * - authJwt.verifyToken: To verify the token in the request.
+   * - authJwt.isAdmin: To check if the user is an admin.
+   */
+  app.delete(PREFIX + 'delete', [authJwt.verifyToken, authJwt.isAdmin], controller.delete);
+  
 }

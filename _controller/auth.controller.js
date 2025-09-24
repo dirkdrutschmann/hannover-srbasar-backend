@@ -134,7 +134,7 @@ exports.resetPassword = async (req, res) => {
 exports.signup = async (req, res) => {
     try {
         const pass = randomstring.generate(7); // Generating a new password
-        const roles = req.body.roles || ['vrsw', 'user']; // Setting roles
+        const roles = req.body.roles || ['user']; // Default to user role for public signup
         
         const user = await User.create({
             email: req.body.email.toLowerCase(), // Setting email

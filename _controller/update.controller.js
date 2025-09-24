@@ -41,13 +41,19 @@ exports.matches = async (req, res) => {
  * @param {object} res - The response object.
  */
 exports.refgame = async (req, res) =>{
+    // Get game ID from params or body
+    const gameId = req.params.game || req.body.gameId || req.body.matchId;
+    
+    if(!gameId){
+        res.status(400)
+        return res.send({error: "Game ID is required!"}) // Sending error response
+    }
 
-    const game = await Match.findOne({matchId: parseInt(req.params.game)}) // Finding the game
+    const game = await Match.findOne({where: {matchId: parseInt(gameId)}}) // Finding the game
     if(!game){
         res.status(404)
         return res.send({error: "Game doesn't exist!"}) // Sending error response
     }
-    console.log(req.body)
     if(req.body.sr1Basar !== undefined && req.club.includes(game.sr1)){
         await game.update({
             sr1Basar: req.body.sr1Basar,

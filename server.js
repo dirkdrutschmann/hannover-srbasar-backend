@@ -36,7 +36,7 @@ async function startServer() {
         }
 
         // Sync database (create tables if they don't exist)
-        await syncDatabase();
+       
 
         // Initialize roles
         await init();
@@ -61,6 +61,7 @@ async function startServer() {
             console.log('Cron-Service aktiviert');
         });
     } catch (err) {
+        await syncDatabase();
         console.error("Server startup error:", err);
         process.exit(1);
     }

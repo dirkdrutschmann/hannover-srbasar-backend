@@ -26,7 +26,20 @@ module.exports = function(app) {
   app.post(PREFIX + "/reset-password", [], controller.resetPassword)
 
   /**
-   * Route for signing up a user.
+   * Route for signing up a user (public registration).
+   * It requires the following middleware:
+   * - verifySignUp.checkDuplicateUsernameOrEmail: To check if the email is already in use.
+   */
+  app.post(
+    PREFIX +  "/signup",
+    [
+      verifySignUp.checkDuplicateUsernameOrEmail
+    ],
+    controller.signup
+  );
+
+  /**
+   * Route for admin to create a user.
    * It requires the following middleware:
    * - authJwt.verifyToken: To verify the token in the request.
    * - authJwt.isAdmin: To check if the user is an admin.
@@ -34,7 +47,7 @@ module.exports = function(app) {
    * - verifySignUp.checkRolesExisted: To check if the roles exist.
    */
   app.post(
-    PREFIX +  "/signup",
+    PREFIX +  "/admin/signup",
     [
       authJwt.verifyToken,
       authJwt.isAdmin,
@@ -44,18 +57,6 @@ module.exports = function(app) {
     controller.signup
   );
 
-  /**
-   * Route for deleting a user.
-   * It requires the following middleware:
-   * - authJwt.verifyToken: To verify the token in the request.
-   * - authJwt.isAdmin: To check if the user is an admin.
-   */
-  app.post(PREFIX +  "/user",
-  [
-    authJwt.verifyToken,
-    authJwt.isAdmin
-  ],
-  controller.delete)
 
   /**
    * Route for signing in a user.

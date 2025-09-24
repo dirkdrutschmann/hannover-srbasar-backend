@@ -100,29 +100,6 @@ router.post('/restart', [authJwt.verifyToken, authJwt.isAdmin], (req, res) => {
 });
 
 /**
- * POST /api/cron/run-now
- * Führt den Haupt-Update sofort aus (für Tests)
- */
-router.post('/run-now', [authJwt.verifyToken, authJwt.isAdmin], async (req, res) => {
-    try {
-        // Führe Update sofort aus
-        await cronService.runMainUpdate();
-        
-        res.json({
-            success: true,
-            message: 'Haupt-Update sofort ausgeführt',
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Fehler beim sofortigen Ausführen des Updates',
-            error: error.message
-        });
-    }
-});
-
-/**
  * GET /api/cron/logs
  * Gibt die letzten Log-Einträge zurück (vereinfacht)
  */
